@@ -1,713 +1,485 @@
-# Dealer WhatsApp Onboarding Architecture
+# Dealer Onboarding Over WhatsApp — Simple Flow
 
-> **For Hermes:** Use subagent-driven-development skill to implement this plan task-by-task after this architecture is approved.
+This document explains the dealer onboarding process in simple business language.
 
-**Goal:** Move dealer onboarding from a manual web-wizard-first process to a WhatsApp-first conversational onboarding flow where the dealer sends documents to the iTarang WhatsApp number, iTarang extracts/verifies data, asks the dealer to confirm/submit, and then routes the application into the existing Sales Admin/Sales Head dealer verification process.
+The main idea is:
 
-**Architecture:** Add an inbound WhatsApp orchestration layer in front of the existing dealer onboarding tables and admin review flow. WhatsApp messages/documents are ingested through a provider webhook, normalized into onboarding sessions, stored as immutable original files in the existing `dealer-documents` bucket, processed by OCR/API verification workers, then merged into `dealer_onboarding_applications` and `dealer_onboarding_documents`. Final submission happens only after a WhatsApp confirmation from the dealer, and the existing `/admin/dealer-verification` flow remains the system of record for approval/rejection/corrections.
-
-**Tech Stack:** Next.js 16 App Router, PostgreSQL via Drizzle ORM, Supabase Storage/Auth, Gupshup WhatsApp Messaging API, Decentro verification APIs, Tesseract/Google Vision-capable OCR, existing Sales Head auth guard and admin review pages.
+**Dealer uses WhatsApp. iTarang collects documents. The system reads and checks them. Dealer confirms the details. Sales Admin reviews and approves in the normal process.**
 
 ---
 
-## Source grounding
+## 1. What We Are Building
 
-This architecture is based on the correct repository and the WhatsApp-first requirement clarified by Apoorv.
+Today, dealer onboarding depends on a form-based process where documents and details are collected manually.
 
-- Repo: `git@github.com:iTarangIT/itarang-software.git`
-- Local path: `/opt/data/repos/itarang-software`
-- Branch: `dealer-onboarding-document-extraction`
-- Base commit inspected: `fe514b2`
+The new process will let a dealer complete most of onboarding by simply chatting with the official iTarang WhatsApp number.
 
-I searched the current session history and repo for the separately shared report, but did not find an attached report artifact in the accessible context. Related repo material inspected instead:
+The dealer will:
 
-- `scripts/generate-work-report.ts` — existing report generator documenting KYC document upload, Decentro PAN/bank verification, WhatsApp/SMS links, and admin review patterns.
-- `src/docs/PROJECT_STRUCTURE.MD` — existing admin OCR/API verification and dealer onboarding flow.
-- Current onboarding/admin code and schema listed below.
+- Send documents on WhatsApp.
+- Answer missing questions on WhatsApp.
+- Review a summary of their details.
+- Confirm or correct the details.
 
-If there is another report file outside this repo/session, attach it and this architecture can be reconciled against it.
+After that, the application goes to the Sales Admin panel for review, exactly like the normal approval process.
 
 ---
 
-## Current repo capabilities to reuse
+## 2. Big Picture Flow
 
-### WhatsApp outbound
+```text
++----------------+
+| Dealer         |
+| on WhatsApp    |
++----------------+
+        |
+        | Sends documents and basic details
+        v
++-------------------------------+
+| iTarang WhatsApp System       |
+| - Collects documents          |
+| - Saves original documents    |
+| - Reads details from them     |
+| - Checks details using APIs   |
++-------------------------------+
+        |
+        | Fills dealer onboarding information
+        v
++-------------------------------+
+| Dealer Reviews Summary        |
+| - Company details             |
+| - GST / PAN                   |
+| - Bank details                |
+| - Uploaded documents          |
++-------------------------------+
+        |
+        | Dealer confirms or corrects
+        v
++-------------------------------+
+| Sales Admin Panel             |
+| - Reviews application         |
+| - Checks documents            |
+| - Approves / rejects / asks   |
+|   for correction              |
++-------------------------------+
+```
 
-- `src/lib/gupshup.ts`
-  - Existing Gupshup wrapper supports `channel = "whatsapp"`.
-  - Supports session/free-text messages and approved template mode.
-  - Env already modeled around:
-    - `GUPSHUP_SMS_ENABLED`
-    - `GUPSHUP_API_KEY`
-    - `GUPSHUP_APP_NAME`
-    - `GUPSHUP_SOURCE`
-    - `GUPSHUP_CHANNEL`
-    - `GUPSHUP_TEMPLATE_ID`
+Simple sentence version:
 
-### Dealer onboarding persistence
-
-- `src/lib/db/schema.ts`
-  - `dealerOnboardingApplications` maps to `dealer_onboarding_applications`.
-  - `dealerOnboardingDocuments` maps to `dealer_onboarding_documents`.
-- Existing application columns cover company, GST/PAN, owner, bank, agreement, onboarding status, review status, approval/rejection/correction, and source metadata.
-- Existing document columns already cover storage metadata plus:
-  - `extracted_data`
-  - `api_verification_results`
-  - `metadata`
-  - `admin_comment`
-
-### Existing web onboarding process to merge with
-
-- Wizard page: `src/app/dealer-onboarding/page.tsx`
-- Store: `src/store/onboardingStore.ts`
-- Submit route: `src/app/api/dealer/onboarding/submit/route.ts`
-- Draft/save route: `src/app/api/dealer-onboarding/save/route.ts`
-- Upload route: `src/app/api/uploads/dealer-documents/route.ts`
-- Bucket: `dealer-documents`
-
-### Existing admin process to keep
-
-- List page: `src/app/(dashboard)/admin/dealer-verification/page.tsx`
-- Detail page: `src/app/(dashboard)/admin/dealer-verification/[dealerId]/page.tsx`
-- List API: `src/app/api/admin/dealer-verifications/route.ts`
-- Detail API: `src/app/api/admin/dealer-verifications/[dealerId]/route.ts`
-- Approve/reject/correction APIs under `src/app/api/admin/dealer-verifications/[dealerId]/...`
-
-### Existing verification/OCR primitives
-
-- `src/lib/decentro.ts`
-  - PAN/GST/public registry validation via `validateDocument`.
-  - Bank verification via `verifyBankAccount`.
-  - Other KYC/forensics helpers.
-- `src/lib/ocr/tesseractOcr.ts`
-  - Image OCR.
-- `src/lib/ocr/bankDocParser.ts`
-  - IFSC/account/bank/branch parsing from OCR text.
-- Dependencies include `@google-cloud/vision`, `@google/generative-ai`, `tesseract.js`, and `sharp`, so a better OCR/vision provider can be added behind an adapter without changing the onboarding flow.
-
----
-
-## Target user experience
-
-### Dealer side on WhatsApp
-
-1. Dealer sends `Hi`, `Start onboarding`, or is messaged from iTarang using an approved WhatsApp template.
-2. Bot identifies the dealer by phone number or creates a new onboarding session.
-3. Bot asks for the required documents one by one.
-4. Dealer uploads documents directly in WhatsApp.
-5. System stores every original document unchanged in Supabase Storage under `dealer-documents`.
-6. System extracts fields from each document and runs verification APIs.
-7. Bot asks follow-up questions only for missing/uncertain fields.
-8. Bot sends a summary of extracted information:
-   - Company name/type/address
-   - GST number
-   - PAN number
-   - Owner/contact details
-   - Bank account/IFSC/beneficiary
-   - Finance enablement/agreement-related fields
-   - Document checklist and verification status
-9. Dealer replies `CONFIRM` / `SUBMIT` or sends corrections.
-10. System creates or updates `dealer_onboarding_applications`, writes all `dealer_onboarding_documents`, sets:
-    - `onboarding_status = 'submitted'`
-    - `review_status = 'pending_admin_review'`
-11. Bot replies that the application has gone to Sales Admin for review.
-
-### Sales Admin side
-
-1. Application appears in existing `/admin/dealer-verification` queue.
-2. Admin opens existing detail page.
-3. Admin sees:
-   - Submitted table fields
-   - Original WhatsApp-uploaded documents
-   - Extracted fields per document
-   - API verification results
-   - Conversation/submission summary
-4. Admin approves/rejects/requests correction using existing buttons.
-5. Correction request can be sent back to dealer over WhatsApp and/or existing correction link flow.
-
----
-
-## High-level architecture
-
-```mermaid
-flowchart TD
-  Dealer[Dealer WhatsApp] --> Gupshup[Gupshup WhatsApp]
-  Gupshup --> Inbound[POST /api/webhooks/gupshup/whatsapp]
-  Inbound --> Verify[Signature / App / Source Validation]
-  Verify --> Normalize[Normalize text/media/event payload]
-  Normalize --> Session[Resolve or create whatsapp_onboarding_sessions]
-  Session --> StateMachine[Dealer onboarding conversation state machine]
-
-  StateMachine --> NeedDoc{Need document?}
-  NeedDoc -->|yes| PromptDoc[Send WhatsApp prompt]
-  PromptDoc --> Dealer
-  StateMachine -->|media received| MediaFetch[Fetch media from Gupshup]
-  MediaFetch --> Storage[(Supabase Storage dealer-documents)]
-  Storage --> DocRow[(dealer_onboarding_documents draft row)]
-  DocRow --> ExtractQueue[Extraction/Verification job]
-  ExtractQueue --> OCR[OCR / Vision parser]
-  OCR --> Decentro[Decentro APIs]
-  Decentro --> DocExtract[(extracted_data + api_verification_results)]
-  DocExtract --> FieldMerge[Merge high-confidence fields into application draft]
-  FieldMerge --> MissingFields{Missing / uncertain data?}
-  MissingFields -->|yes| AskFollowup[Ask targeted WhatsApp question]
-  AskFollowup --> Dealer
-  MissingFields -->|no| Summary[Send review summary]
-  Summary --> Dealer
-  Dealer --> Confirm{CONFIRM / SUBMIT?}
-  Confirm -->|correction| StateMachine
-  Confirm -->|submit| Submit[Mark submitted + pending_admin_review]
-  Submit --> AdminQueue[/admin/dealer-verification]
-  AdminQueue --> AdminDecision[Approve / Reject / Request Correction]
+```text
+Dealer sends documents on WhatsApp
+        ↓
+iTarang saves and reads the documents
+        ↓
+iTarang checks GST, PAN, and bank details
+        ↓
+System fills the onboarding application
+        ↓
+Dealer confirms the final summary
+        ↓
+Sales Admin reviews in the existing panel
 ```
 
 ---
 
-## Recommended new modules
+## 3. Dealer Experience Flow
 
-### 1. WhatsApp webhook route
+This is what the dealer will experience.
 
-Create:
+```text
+Dealer sends: "Hi" or "Start onboarding"
+        ↓
+Bot replies:
+"Welcome to iTarang dealer onboarding.
+We will collect your documents here."
+        ↓
+Bot asks for one document at a time:
+"Please send your GST certificate."
+        ↓
+Dealer sends photo or PDF
+        ↓
+System saves the original document
+        ↓
+System reads the document
+        ↓
+System checks if details are clear and valid
+        ↓
+If document is OK:
+    Bot asks for next document
 
-- `src/app/api/webhooks/gupshup/whatsapp/route.ts`
-
-Responsibilities:
-
-- Accept Gupshup inbound webhook payloads.
-- Verify request authenticity using provider headers/shared secret.
-- Normalize inbound payloads into internal events:
-  - `text_message`
-  - `document_message`
-  - `image_message`
-  - `button_reply`
-  - `delivery_status`
-- Return HTTP 200 quickly after persisting event.
-- Do not run OCR synchronously in the webhook request.
-
-### 2. WhatsApp provider adapter
-
-Create:
-
-- `src/lib/whatsapp/gupshup-inbound.ts`
-- `src/lib/whatsapp/gupshup-outbound.ts`
-
-Responsibilities:
-
-- Parse Gupshup payloads.
-- Fetch media bytes from Gupshup media URLs using configured credentials.
-- Send text/template/list/button messages.
-- Mask phone numbers in logs.
-- Keep provider-specific fields out of core onboarding logic.
-
-Reuse/extend:
-
-- `src/lib/gupshup.ts`
-
-### 3. Conversation state machine
-
-Create:
-
-- `src/lib/onboarding/whatsapp/state-machine.ts`
-- `src/lib/onboarding/whatsapp/document-checklist.ts`
-- `src/lib/onboarding/whatsapp/prompts.ts`
-
-Responsibilities:
-
-- Determine next question/document.
-- Maintain the checklist state.
-- Decide whether the dealer can submit.
-- Avoid overwriting confirmed user data silently.
-- Support commands:
-  - `START`
-  - `STATUS`
-  - `HELP`
-  - `RESET` / admin-only reset
-  - `CONFIRM`
-  - `SUBMIT`
-  - `CHANGE <field>`
-
-### 4. Document ingestion service
-
-Create:
-
-- `src/lib/onboarding/whatsapp/document-ingestion.ts`
-
-Responsibilities:
-
-- Accept normalized WhatsApp media.
-- Download bytes.
-- Detect MIME type and file name.
-- Store original file in Supabase Storage bucket `dealer-documents`.
-- Create/update a draft `dealer_onboarding_documents` row with:
-  - `application_id`
-  - `document_type`
-  - `bucket_name`
-  - `storage_path`
-  - `file_name`
-  - `file_url`
-  - `mime_type`
-  - `file_size`
-  - `doc_status = 'uploaded'`
-  - `verification_status = 'processing'`
-  - `metadata.source = 'whatsapp'`
-  - `metadata.whatsappMessageId`
-  - `metadata.sessionId`
-
-### 5. Extraction and verification service
-
-Create:
-
-- `src/lib/onboarding/dealer-document-extraction.ts`
-- `src/lib/onboarding/dealer-document-verification.ts`
-
-Responsibilities:
-
-- Run OCR/vision extraction.
-- Normalize fields per document type.
-- Run Decentro/API validations.
-- Write outputs into document JSON columns.
-- Return structured field suggestions.
-
-Document-specific behavior:
-
-- GST certificate:
-  - Extract GSTIN, legal name, trade name, address.
-  - Verify GSTIN via Decentro/public registry where available.
-  - Map to `gst_number`, `company_name`, `business_address` suggestions.
-- Company PAN:
-  - Extract PAN, name.
-  - Verify PAN via Decentro where required parameters are available.
-  - Map to `pan_number` and legal name suggestions.
-- Bank statement / cancelled cheque / undated cheques:
-  - Extract account number, IFSC, bank name, branch, beneficiary/name.
-  - Verify bank account with Decentro `verifyBankAccount` when account + IFSC are present.
-  - Map to `account_number`, `ifsc_code`, `bank_name`, `beneficiary_name`.
-- Udyam certificate:
-  - Extract Udyam number, entity name, address.
-  - Store in `extracted_data`; if no application column exists, store under `provider_raw_response.whatsappExtraction.udyam` or document JSON.
-- ITR / partnership deed / MoU / AoA / photographs:
-  - Store original and OCR metadata initially.
-  - Extract only safe high-level metadata unless a business rule requires more.
-
-### 6. Field merge service
-
-Create:
-
-- `src/lib/onboarding/whatsapp/application-draft.ts`
-
-Responsibilities:
-
-- Create or update `dealer_onboarding_applications` draft row for the WhatsApp session.
-- Merge high-confidence extracted fields only into empty fields, unless the dealer explicitly confirms a replacement.
-- Track field provenance in JSON, preferably under `provider_raw_response.whatsappOnboarding`:
-
-```json
-{
-  "source": "whatsapp",
-  "sessionId": "...",
-  "fieldConfidence": {
-    "gst_number": { "sourceDocumentType": "gst_certificate", "confidence": 0.98 },
-    "account_number": { "sourceDocumentType": "bank_statement_3_months", "confidence": 0.91 }
-  },
-  "dealerConfirmedAt": "..."
-}
+If document is unclear or wrong:
+    Bot asks dealer to resend or correct it
+        ↓
+After all documents are collected:
+Bot sends a summary of all details
+        ↓
+Dealer replies:
+    CONFIRM  → submit to Sales Admin
+    CHANGE   → correct details first
+        ↓
+Application goes to Sales Admin for review
 ```
 
-### 7. Job processing/backstop
+---
 
-Recommended minimal first implementation:
+## 4. Sales Admin Review Flow
 
-- Persist inbound event.
-- Process extraction through an internal API route called by QStash/cron or a safe server-side job endpoint.
+The Sales Admin process should remain familiar.
 
-Create:
+```text
+New WhatsApp onboarding application arrives
+        ↓
+Application appears in Sales Admin review list
+        ↓
+Admin opens the application
+        ↓
+Admin sees:
+    - Dealer company details
+    - GST / PAN / bank details
+    - All original documents
+    - What the system extracted from documents
+    - Verification status and warnings
+        ↓
+Admin takes decision:
 
-- `src/app/api/internal/dealer-whatsapp/process-next/route.ts`
-- `src/app/api/cron/dealer-whatsapp-retry/route.ts`
+    APPROVE
+        ↓
+    Dealer moves forward in the normal process
 
-Later scalable implementation:
+    REJECT
+        ↓
+    Dealer is informed
 
-- Use BullMQ/Redis because dependencies already include `bullmq` and `ioredis`, but do not introduce it unless deployment Redis is confirmed.
-
-### 8. Admin review enrichment
-
-Modify:
-
-- `src/app/api/admin/dealer-verifications/[dealerId]/route.ts`
-- `src/app/(dashboard)/admin/dealer-verification/[dealerId]/page.tsx`
-
-Add to admin detail response:
-
-- Document `extractedData`
-- Document `apiVerificationResults`
-- Document `metadata.source = whatsapp`
-- WhatsApp session summary and dealer confirmation timestamp
-- Verification status per document
-
-Admin page additions:
-
-- Show “Source: WhatsApp onboarding” badge.
-- Show extracted fields below each document.
-- Show mismatch alerts:
-  - submitted GST vs GST certificate GST
-  - submitted PAN vs PAN document PAN
-  - submitted account/IFSC vs bank verification result
-- Keep existing approve/reject/correction process unchanged.
+    ASK FOR CORRECTION
+        ↓
+    Dealer receives correction request on WhatsApp
+        ↓
+    Dealer sends corrected document/detail
+        ↓
+    Admin reviews again
+```
 
 ---
 
-## Data model additions
+## 5. Documents Collected
 
-Existing tables can store the final application/document state, but WhatsApp needs conversation/session/audit persistence. Add new tables via Drizzle migration.
+The WhatsApp bot should collect the same documents required in the current dealer onboarding workflow.
 
-### `dealer_whatsapp_onboarding_sessions`
+### Company and identity documents
 
-Purpose: one onboarding conversation/session per dealer phone/application.
-
-Suggested columns:
-
-- `id uuid primary key`
-- `application_id uuid null` → `dealer_onboarding_applications.id`
-- `phone varchar(20) not null`
-- `dealer_name text null`
-- `language varchar(20) default 'en'`
-- `status varchar(40) not null default 'active'`
-  - `active`
-  - `collecting_documents`
-  - `extracting`
-  - `awaiting_missing_info`
-  - `awaiting_dealer_confirmation`
-  - `submitted_for_admin_review`
-  - `admin_correction_requested`
-  - `closed`
-- `current_step varchar(80) null`
-- `required_documents jsonb default []`
-- `collected_documents jsonb default []`
-- `missing_fields jsonb default []`
-- `extracted_snapshot jsonb default {}`
-- `confirmed_snapshot jsonb default {}`
-- `last_inbound_message_id text null`
-- `last_outbound_message_id text null`
-- `last_message_at timestamp with time zone null`
-- `dealer_confirmed_at timestamp with time zone null`
-- `submitted_at timestamp with time zone null`
-- `created_at timestamp with time zone default now()`
-- `updated_at timestamp with time zone default now()`
-
-Indexes:
-
-- unique active session per phone, or `(phone, status)` partial index for open statuses.
-- index on `application_id`.
-
-### `dealer_whatsapp_messages`
-
-Purpose: audit trail and idempotency for inbound/outbound WhatsApp events.
-
-Suggested columns:
-
-- `id uuid primary key`
-- `session_id uuid null`
-- `application_id uuid null`
-- `provider varchar(30) default 'gupshup'`
-- `provider_message_id text not null`
-- `direction varchar(10) not null` — inbound/outbound
-- `message_type varchar(30) not null` — text/image/document/button/status
-- `from_phone varchar(20) null`
-- `to_phone varchar(20) null`
-- `text text null`
-- `media_url text null`
-- `media_mime_type varchar(100) null`
-- `media_file_name text null`
-- `document_id uuid null` → `dealer_onboarding_documents.id`
-- `payload jsonb default {}`
-- `processing_status varchar(30) default 'received'`
-  - `received`
-  - `processed`
-  - `failed`
-  - `ignored_duplicate`
-- `error_message text null`
-- `created_at timestamp with time zone default now()`
-
-Indexes:
-
-- unique `provider_message_id` for idempotency.
-- index on `session_id`.
-- index on `application_id`.
-
-### Optional `dealer_whatsapp_field_confirmations`
-
-Purpose: field-level audit for dealer corrections before final submission.
-
-Columns:
-
-- `id uuid primary key`
-- `session_id uuid not null`
-- `application_id uuid not null`
-- `field_key varchar(100) not null`
-- `old_value text null`
-- `new_value text null`
-- `source varchar(30)` — extracted/manual/admin_correction
-- `source_document_id uuid null`
-- `confirmed_by_phone varchar(20)`
-- `confirmed_at timestamp with time zone default now()`
-
----
-
-## Document checklist for WhatsApp bot
-
-Use the existing onboarding wizard slots as the first version of the checklist.
-
-### Company documents
-
-- GST Certificate
+- GST certificate
 - Company PAN
+- Company registration / business proof, if applicable
+- Udyam certificate, if applicable
 
-### Compliance documents
+### Financial documents
 
-- Last 3 years company ITR
-- Last 3 months company bank statement
-- 4 undated cheques / cancelled cheque equivalent if business accepts it
-- Passport size photograph
-- Udyam registration certificate
+- Bank statement
+- Cancelled cheque or required cheque documents
+- ITR documents, if required
 
-### Ownership/banking documents
+### Owner / partner / director documents
 
 - Owner photograph
-- Partnership deed for partnership/LLP
-- MoU if required
-- AoA for company type where applicable
-- Partner/director photographs when partner/director rows are collected
+- Partner photographs, if partnership
+- Director photographs, if company
+- Partnership deed, MoU, AoA, or other legal documents where required
 
-### Conditional questions
+### Details that may be asked separately
 
-Ask over WhatsApp when not extractable:
+Some details may not be clearly available in the documents. The bot can ask the dealer directly for:
 
+- Owner name
+- Mobile number
+- Email address
 - Company type
-- Owner/contact name, phone, email
+- Business address confirmation
+- Bank branch details
 - Whether finance enablement is required
-- Branch dealer flag if applicable
-- Sales manager details if not known from internal assignment
-- Agreement language
-- Authorized signatory details
+- Agreement language or signatory details, if required
 
 ---
 
-## State machine
+## 6. What the System Does With Documents
 
-### States
+For every document received on WhatsApp, the system should do four things.
 
-- `new_session`
-- `collect_company_identity`
-- `collect_gst_certificate`
-- `collect_company_pan`
-- `collect_compliance_documents`
-- `collect_ownership_documents`
-- `collect_missing_fields`
-- `run_verifications`
-- `awaiting_dealer_confirmation`
-- `submitted_for_admin_review`
-- `admin_correction_requested`
-- `closed_approved`
-- `closed_rejected`
+```text
+1. SAVE
+   Keep the original document exactly as the dealer sent it.
 
-### Transitions
+2. READ
+   Read important details from the document.
+   Example: GST number, PAN number, bank account, IFSC.
 
-- `START` → create session/application draft.
-- Text answer → update field or command state.
-- Media upload → store original document, classify, extract, verify, update checklist.
-- All required docs + required fields present → send summary.
-- Dealer `CONFIRM` → lock dealer-confirmed snapshot.
-- Dealer `SUBMIT` → set existing application status/review status for admin queue.
-- Admin correction → reopen session with correction checklist.
+3. CHECK
+   Verify key details using available APIs.
+   Example: GST check, PAN check, bank account check.
 
-### Idempotency rules
+4. FILL
+   Put the confirmed details into the dealer onboarding application.
+```
 
-- Ignore duplicate provider message IDs.
-- If dealer uploads the same document type again before submit, mark previous document row as `superseded` or keep latest per type and preserve the prior document in storage.
-- Never delete original storage objects automatically.
-- Do not overwrite manually corrected fields unless dealer explicitly confirms replacement.
+Important: the system should not silently approve a dealer. It only prepares the application and helps Sales Admin review faster.
 
 ---
 
-## Submission into existing main process
+## 7. Dealer Confirmation Before Submission
 
-When the WhatsApp session is ready and dealer confirms:
+Before the application goes to Sales Admin, the dealer should see a simple summary.
 
-1. Ensure `dealer_onboarding_applications` row exists.
-2. Populate application fields from confirmed snapshot:
-   - `company_name`
-   - `company_type`
-   - `gst_number`
-   - `pan_number`
-   - `business_address`
-   - `owner_name`
-   - `owner_phone`
-   - `owner_email`
-   - `bank_name`
-   - `account_number`
-   - `beneficiary_name`
-   - `ifsc_code`
-   - `finance_enabled`
-   - agreement-related fields as available
-3. Ensure all document rows point to the application.
-4. Set document statuses:
-   - `doc_status = 'uploaded'`
-   - `verification_status = 'verified' | 'partial' | 'failed' | 'pending_admin_review'` based on API results.
-5. Store WhatsApp source metadata.
-6. Set application:
-   - `onboarding_status = 'submitted'`
-   - `review_status = 'pending_admin_review'`
-   - `submitted_at = now()`
-   - `provider_raw_response.whatsappOnboarding = ...`
-7. Admin sees it in existing dealer verification queue.
+Example message:
+
+```text
+Please confirm your dealer onboarding details:
+
+Company: ABC Motors
+GST: 27ABCDE****1Z5
+PAN: ABCDE****F
+Bank: HDFC Bank
+Account: XXXXXXXX1234
+IFSC: HDFC****234
+Documents received: GST, PAN, Bank Statement, Photo
+
+Reply CONFIRM to submit.
+Reply CHANGE if anything is wrong.
+```
+
+Sensitive numbers should be partly hidden in the WhatsApp summary.
+
+The bot should also understand simple natural replies, not only exact keywords. For example:
+
+- `CONFIRM`, `OK`, `YES`, `HAAN` should be treated as confirmation.
+- `CHANGE`, `EDIT`, `WRONG`, `CORRECT` should open the correction flow.
+
+Only after the dealer confirms should the application move to Sales Admin review.
 
 ---
 
-## API verification matrix
+## 8. What Happens If There Is A Problem
 
-### GST
+### If the photo or PDF is unclear
 
-- Input: GSTIN extracted from certificate or dealer text.
-- API: Decentro public registry GSTIN/GSTIN_DETAILED if configured.
-- Store:
-  - `dealer_onboarding_documents.api_verification_results.gst`
-  - normalized result fields in `extracted_data`.
-- Flag mismatch if legal name differs materially from company name.
+```text
+System says:
+"This document is not clear. Please resend a clearer photo or PDF."
+```
 
-### PAN
+### If the wrong document is sent
 
-- Input: PAN extracted from PAN card/document or dealer text.
-- API: Decentro PAN/PAN detailed if configured.
-- Store:
-  - PAN status
-  - legal name
-  - name match score where available.
-- Flag mismatch if PAN name differs from company/owner depending company type.
+```text
+System says:
+"This does not look like a GST certificate.
+Please send your GST certificate."
+```
 
-### Bank
+### If details do not match
 
-- Input: account number + IFSC + beneficiary/company name.
-- API: `verifyBankAccount` from `src/lib/decentro.ts`.
-- Store:
-  - account status
-  - returned account holder name
-  - IFSC/bank details
-  - name match result if API returns it.
-- Flag mismatch if beneficiary name differs from company/owner.
+Example: the bank account name does not match the company or owner name.
 
-### Udyam
+```text
+System marks it as a warning.
+Dealer may be asked to correct it.
+Sales Admin will also see the warning during review.
+```
 
-- Input: Udyam number extracted from certificate.
-- API: Decentro `UDYOG_AADHAAR`/Udyam where available.
-- Store result under document JSON even if no dedicated application column exists.
+Important rule:
 
----
+```text
+A failed GST / PAN / bank check should not secretly pass.
+It should either:
+  - ask the dealer for correction, or
+  - go to Sales Admin with a clear warning.
 
-## Admin review changes
+Sales Admin makes the final decision.
+```
 
-Admin detail page should show:
+### If the dealer stops responding
 
-- Header badge: `Source: WhatsApp Onboarding`.
-- Dealer phone/session ID.
-- Dealer confirmation timestamp.
-- Checklist completion status.
-- Document rows with:
-  - Original file link
-  - Upload source and WhatsApp message ID
-  - Extracted fields
-  - API verification result
-  - Mismatch warnings
-- Conversation summary:
-  - Not raw full chat by default.
-  - Show latest important prompts/answers and confirmation text.
+```text
+Bot sends a reminder after some time.
+Dealer can continue from where they left off.
+If there is no response for too long, the session is marked incomplete.
+```
 
-Admin actions remain unchanged:
+### If the dealer wants to correct something
 
-- Approve → existing approve API creates/links user/account/dealer.
-- Reject → existing reject API.
-- Request correction → existing correction API plus WhatsApp notification to dealer.
+```text
+Dealer replies: CHANGE
+        ↓
+Bot asks what needs to be changed
+        ↓
+Dealer sends corrected detail or document
+        ↓
+System updates the summary
+        ↓
+Dealer confirms again
+```
 
 ---
 
-## Security, compliance, and operational rules
+## 9. What Stays the Same
 
-- Verify inbound webhook authenticity before processing.
-- Store raw provider payloads in DB, not logs.
-- Mask phone/PAN/account numbers in logs.
-- Do not send full PAN/account numbers back over WhatsApp; mask sensitive values in summaries.
-- Store original documents exactly as received.
-- Extraction is advisory until dealer confirms and admin approves.
-- Admin approval remains mandatory.
-- Maintain idempotency by provider message ID.
-- Return webhook response quickly; use async processing/backstop for slow OCR/API calls.
-- Use approved WhatsApp templates outside the 24-hour session window.
+This new process changes the way documents are collected, but it does not remove the existing approval control.
 
----
+The following should stay the same:
 
-## Implementation phases
+- Sales Admin still reviews the dealer application.
+- Sales Admin still approves, rejects, or asks for correction.
+- Original documents are still saved.
+- Dealer onboarding records are still populated in the main system.
+- The application still merges into the normal dealer onboarding process after review.
 
-### Phase 1 — Foundation
+In short:
 
-- Add DB tables for WhatsApp sessions/messages.
-- Add inbound Gupshup webhook route.
-- Add provider parser and idempotency.
-- Add outbound WhatsApp helper using existing Gupshup wrapper.
-- Add basic state machine: start/status/help.
-
-### Phase 2 — Document collection
-
-- Add document checklist.
-- Add media download and storage to `dealer-documents`.
-- Create draft `dealer_onboarding_applications` and document rows.
-- Ask for missing required documents over WhatsApp.
-
-### Phase 3 — Extraction and verification
-
-- Add dealer document extraction service.
-- Add Decentro verification service for GST/PAN/bank.
-- Persist `extracted_data` and `api_verification_results`.
-- Merge high-confidence fields into application draft.
-
-### Phase 4 — Dealer confirmation/submission
-
-- Generate masked WhatsApp summary.
-- Accept corrections and update fields.
-- Accept `CONFIRM`/`SUBMIT`.
-- Submit into existing admin review queue.
-
-### Phase 5 — Admin review integration
-
-- Add WhatsApp source/extraction panels to admin detail page.
-- Add mismatch badges.
-- Send correction/rejection/approval updates to dealer over WhatsApp where configured.
-
-### Phase 6 — Testing and hardening
-
-- Unit tests for payload parser, state machine, document type inference, field merge.
-- Integration tests for webhook idempotency and application submission.
-- Manual sandbox test with real Gupshup media payload.
-- Type-check and lint.
+```text
+WhatsApp becomes the collection channel.
+Sales Admin remains the approval authority.
+```
 
 ---
 
-## Acceptance criteria
+## 10. Implementation Blocks in Simple Terms
 
-- Dealer can complete onboarding using only WhatsApp until final admin review.
-- All original WhatsApp documents are stored in `dealer-documents`.
-- All documents are represented in `dealer_onboarding_documents`.
-- Required table fields are populated in `dealer_onboarding_applications` from extracted/confirmed data.
-- GST/PAN/bank verification results are stored and visible to admin.
-- Dealer receives a WhatsApp summary and must confirm before admin submission.
-- Confirmed application appears in existing `/admin/dealer-verification` queue.
-- Admin review/approve/reject/correction remains the same main process.
-- Duplicate WhatsApp webhook deliveries do not duplicate documents/applications.
+The work can be divided into clear blocks.
+
+### Block 1 — WhatsApp entry point
+
+Receive dealer messages and documents from the official iTarang WhatsApp number.
+
+### Block 2 — Document saving
+
+Save every original document safely in the same document storage process used today.
+
+### Block 3 — Document reading
+
+Read key details from the documents:
+
+- GST number
+- PAN number
+- Company name
+- Business address
+- Bank account number
+- IFSC
+- Owner or signatory details
+
+### Block 4 — Verification
+
+Check key details using APIs wherever available:
+
+- GST verification
+- PAN verification
+- Bank account verification
+
+### Block 5 — Application filling
+
+Use the extracted and verified details to fill the dealer onboarding application.
+
+### Block 6 — Dealer confirmation
+
+Send the dealer a summary on WhatsApp and ask for final confirmation.
+
+### Block 7 — Sales Admin handoff
+
+Once confirmed, send the application to the Sales Admin review panel.
+
+### Block 8 — Correction loop
+
+If Sales Admin asks for a correction, notify the dealer on WhatsApp and collect the corrected document or detail.
 
 ---
 
-## Open decisions
+## 11. End-to-End Flow in One View
 
-- WhatsApp provider: assume Gupshup because existing repo has Gupshup outbound; confirm if production iTarang WhatsApp uses Gupshup or another BSP.
-- OCR provider: start with existing Tesseract/Google Vision adapter; decide whether to use Google Vision/Gemini for PDFs and low-quality WhatsApp images.
-- Job runner: start with internal retry/cron endpoints unless Redis/BullMQ deployment is confirmed.
-- Correction channel: use existing correction link plus WhatsApp notification, or allow full correction inside WhatsApp.
-- Agreement/eSign: confirm whether dealer agreement is initiated only after admin review or during WhatsApp pre-submission for finance-enabled dealers.
+```text
+START
+  |
+  v
+Dealer messages iTarang WhatsApp
+  |
+  v
+Bot creates/opens dealer onboarding session
+  |
+  v
+Bot asks for required documents one by one
+  |
+  v
+Dealer sends documents
+  |
+  v
+System stores original documents
+  |
+  v
+System reads details from documents
+  |
+  v
+System verifies GST / PAN / bank where possible
+  |
+  v
+System fills onboarding application
+  |
+  v
+Bot sends masked summary to dealer
+  |
+  v
+Dealer confirms?
+  |
+  +---- No ----> Dealer corrects detail/document
+  |                 |
+  |                 v
+  |              Summary sent again
+  |
+  +---- Yes ---> Application submitted to Sales Admin
+                    |
+                    v
+                 Admin reviews
+                    |
+          +---------+----------+
+          |         |          |
+          v         v          v
+       Approve   Reject   Ask Correction
+          |         |          |
+          v         v          v
+       Normal    Dealer    Dealer fixes
+       process   informed  on WhatsApp
+```
+
+---
+
+## 12. Open Decisions
+
+These are business decisions to confirm before implementation.
+
+1. Which WhatsApp provider is final for inbound messages?
+   - Existing system already supports WhatsApp sending through Gupshup.
+   - We need to confirm inbound WhatsApp setup also uses the same provider.
+
+2. Which documents are mandatory for each dealer type?
+   - Sole proprietor
+   - Partnership
+   - LLP
+   - Private limited company
+   - Branch dealer
+
+3. Should corrections happen fully on WhatsApp, or through the existing correction link?
+
+4. Should the dealer agreement happen before Sales Admin review or after Sales Admin approval?
+
+5. Who receives alerts when a new WhatsApp onboarding application is ready for review?
+
+---
+
+## 13. Optional Engineering Note
+
+For engineers, the WhatsApp process should connect into the existing dealer onboarding and Sales Admin review system rather than creating a separate approval process.
+
+The WhatsApp layer should only handle:
+
+- conversation
+- document collection
+- extraction
+- verification
+- dealer confirmation
+- handoff to Sales Admin
+
+The final business decision should remain inside the normal Sales Admin review flow.
