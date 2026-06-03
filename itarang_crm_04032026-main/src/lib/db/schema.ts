@@ -1410,19 +1410,53 @@ export const dealerOnboardings = pgTable('dealer_onboardings', {
   gstin: varchar('gstin', { length: 15 }).notNull(),
   pan: varchar('pan', { length: 10 }).notNull(),
   address: text('address').notNull(),
+  company_type: varchar('company_type', { length: 100 }),
+  bank_name: text('bank_name'),
+  bank_account_number: text('bank_account_number'),
+  ifsc_code: varchar('ifsc_code', { length: 11 }),
+  extracted_data: jsonb('extracted_data'),
+  application_status: varchar('application_status', { length: 30 })
+    .default('pending_review')
+    .notNull(), // pending_review, approved, rejected
+  review_notes: text('review_notes'),
+  reviewed_by: uuid('reviewed_by').references(() => users.id),
+  reviewed_at: timestamp('reviewed_at', { withTimezone: true }),
   signzy_document_url: text('signzy_document_url'),
   signzy_status: varchar('signzy_status', { length: 50 })
     .default('pending')
     .notNull(), // pending, generated, sent, signed, failed
   account_id: varchar('account_id', { length: 255 })
     .references(() => accounts.id), // becomes an account after approval
+  submitted_at: timestamp('submitted_at', { withTimezone: true }).defaultNow().notNull(),
   created_at: timestamp('created_at', { withTimezone: true })
     .defaultNow()
     .notNull(),
   updated_at: timestamp('updated_at', { withTimezone: true })
     .defaultNow()
     .notNull(),
-});
+}, (table) => ({
+  statusIdx: index('dealer_onboardings_status_idx').on(table.application_status),
+}));
+
+export const dealerOnboardingDocuments = pgTable('dealer_onboarding_documents', {
+  id: varchar('id', { length: 255 }).primaryKey(), // DLRDOC-YYYYMMDD-SEQ
+  onboarding_id: varchar('onboarding_id', { length: 255 })
+    .references(() => dealerOnboardings.id, { onDelete: 'cascade' })
+    .notNull(),
+  document_type: varchar('document_type', { length: 100 }).notNull(),
+  file_name: text('file_name').notNull(),
+  file_size: integer('file_size'),
+  mime_type: varchar('mime_type', { length: 100 }),
+  storage_bucket: varchar('storage_bucket', { length: 100 }).default('private-documents').notNull(),
+  storage_path: text('storage_path').notNull(),
+  ocr_status: varchar('ocr_status', { length: 30 }).default('not_processed').notNull(),
+  ocr_text: text('ocr_text'),
+  parsed_fields: jsonb('parsed_fields'),
+  uploaded_at: timestamp('uploaded_at', { withTimezone: true }).defaultNow().notNull(),
+}, (table) => ({
+  onboardingIdx: index('dealer_onboarding_documents_onboarding_idx').on(table.onboarding_id),
+  documentTypeIdx: index('dealer_onboarding_documents_type_idx').on(table.document_type),
+}));
 
 /* -------------------------------------------------
    Relation helpers for the new tables
@@ -1504,10 +1538,23 @@ export const couponAuditLogsRelations = relations(couponAuditLogs, ({ one }) => 
 
 export const dealerOnboardingsRelations = relations(dealerOnboardings, ({
   one,
+  many,
 }) => ({
   account: one(accounts, {
     fields: [dealerOnboardings.account_id],
     references: [accounts.id],
+  }),
+  reviewer: one(users, {
+    fields: [dealerOnboardings.reviewed_by],
+    references: [users.id],
+  }),
+  documents: many(dealerOnboardingDocuments),
+}));
+
+export const dealerOnboardingDocumentsRelations = relations(dealerOnboardingDocuments, ({ one }) => ({
+  onboarding: one(dealerOnboardings, {
+    fields: [dealerOnboardingDocuments.onboarding_id],
+    references: [dealerOnboardings.id],
   }),
 }));
 

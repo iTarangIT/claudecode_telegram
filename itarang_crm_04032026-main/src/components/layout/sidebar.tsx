@@ -1,12 +1,23 @@
 "use client";
 
-import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { LayoutDashboard, ShoppingCart, Users, FileText, LogOut, Phone, PieChart, Package, FileCheck, Landmark, Briefcase, Building, Receipt, ClipboardCheck, Car, Battery, Wrench, CreditCard, Megaphone, Shield } from 'lucide-react';
+import { LayoutDashboard, ShoppingCart, Users, FileText, Phone, PieChart, Package, FileCheck, Landmark, Briefcase, Building, Receipt, Car, Battery, Wrench, CreditCard, Megaphone, Shield, type LucideIcon } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-const roleNavigation: Record<string, any[]> = {
+type NavigationItem = {
+    id: string;
+    label: string;
+    icon: LucideIcon;
+    href: string;
+};
+
+type NavigationGroup = {
+    section: string;
+    items: NavigationItem[];
+};
+
+const roleNavigation: Record<string, NavigationGroup[]> = {
     ceo: [
         { section: 'OVERVIEW', items: [{ id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, href: '/ceo' }] },
         {
@@ -26,6 +37,7 @@ const roleNavigation: Record<string, any[]> = {
         },
         {
             section: 'ADMIN', items: [
+                { id: 'dealer-onboarding', label: 'Dealer Onboarding', icon: Building, href: '/ceo/dealer-onboarding' },
                 { id: 'kyc-review', label: 'KYC Review', icon: Shield, href: '/admin/kyc-review' },
             ]
         },
@@ -41,6 +53,7 @@ const roleNavigation: Record<string, any[]> = {
         },
         {
             section: 'ADMIN', items: [
+                { id: 'dealer-onboarding', label: 'Dealer Onboarding', icon: Building, href: '/sales-head/dealer-onboarding' },
                 { id: 'kyc-review', label: 'KYC Review', icon: Shield, href: '/admin/kyc-review' },
             ]
         },
@@ -172,11 +185,11 @@ export function Sidebar() {
             </div>
 
             <div className="flex-1 overflow-y-auto py-4 px-4 space-y-8">
-                {menuItems.map((group: any) => (
+                {menuItems.map((group) => (
                     <div key={group.section}>
                         <h3 className="text-xs font-semibold text-gray-400 mb-3 px-2 tracking-wider">{group.section}</h3>
                         <div className="space-y-1">
-                            {group.items.map((item: any) => {
+                            {group.items.map((item) => {
                                 const isActive = pathname === item.href;
                                 return (
                                     <Link
