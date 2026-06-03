@@ -6,6 +6,26 @@ The main idea is:
 
 **Dealer uses WhatsApp. iTarang collects documents. The system reads and checks them. Dealer confirms the details. Sales Admin reviews and approves in the normal process.**
 
+The flowcharts are included directly inside this document as simple text diagrams, so there is no separate diagram file to open.
+
+Quick visual flow:
+
+```text
+Dealer on WhatsApp
+        ↓
+iTarang collects and saves documents
+        ↓
+System reads details from documents
+        ↓
+System verifies GST / PAN / bank details
+        ↓
+System fills the dealer onboarding application
+        ↓
+Dealer confirms the summary
+        ↓
+Sales Admin reviews in the normal panel
+```
+
 ---
 
 ## 1. What We Are Building
