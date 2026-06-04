@@ -472,9 +472,10 @@ These decisions are now captured for implementation.
 
 1. WhatsApp API / provider
    - A WhatsApp API connection is required because normal WhatsApp does not expose dealer messages, media uploads, delivery events, templates, or webhook callbacks to the iTarang server.
-   - This can be done either through Meta WhatsApp Cloud API directly or through a WhatsApp Business API provider/BSP.
-   - Since the existing iTarang system already has Gupshup WhatsApp sending support, the recommended implementation is to use the same Gupshup WhatsApp Business API setup for inbound messages also, unless iTarang later decides to migrate fully to Meta Cloud API.
-   - The key point: iTarang does not need a separate new provider if Gupshup is already active for the official WhatsApp number; inbound webhooks can be configured on the same Gupshup app/number.
+   - iTarang does not necessarily need a third-party WhatsApp provider/BSP. It can either use Meta WhatsApp Cloud API directly or use the existing Interakt setup.
+   - Since iTarang already uses Interakt for WhatsApp operations, the recommended first implementation is to connect the agentic onboarding flow through Interakt inbound webhooks and media APIs, provided Interakt exposes the required inbound message, media-download, template, and delivery-status APIs.
+   - Direct Meta WhatsApp Cloud API is the better long-term engineering option only if Interakt cannot provide reliable real-time inbound webhooks/media access, becomes too expensive at scale, or limits the agentic conversation workflow.
+   - The implementation should hide the provider behind an internal WhatsApp adapter so iTarang can start with Interakt and later switch to Meta Cloud API without rewriting the onboarding flow.
 
 2. Mandatory documents and fields by dealer type
    - Source of truth: existing `itarang-software` onboarding validation and submit logic.
