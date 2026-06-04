@@ -466,26 +466,76 @@ Dealer confirms?
 
 ---
 
-## 12. Open Decisions
+## 12. Final Decisions
 
-These are business decisions to confirm before implementation.
+These decisions are now captured for implementation.
 
-1. Which WhatsApp provider is final for inbound messages?
-   - Existing system already supports WhatsApp sending through Gupshup.
-   - We need to confirm inbound WhatsApp setup also uses the same provider.
+1. WhatsApp API / provider
+   - A WhatsApp API connection is required because normal WhatsApp does not expose dealer messages, media uploads, delivery events, templates, or webhook callbacks to the iTarang server.
+   - This can be done either through Meta WhatsApp Cloud API directly or through a WhatsApp Business API provider/BSP.
+   - Since the existing iTarang system already has Gupshup WhatsApp sending support, the recommended implementation is to use the same Gupshup WhatsApp Business API setup for inbound messages also, unless iTarang later decides to migrate fully to Meta Cloud API.
+   - The key point: iTarang does not need a separate new provider if Gupshup is already active for the official WhatsApp number; inbound webhooks can be configured on the same Gupshup app/number.
 
-2. Which documents are mandatory for each dealer type?
-   - Sole proprietor
-   - Partnership
-   - LLP
-   - Private limited company
-   - Branch dealer
+2. Mandatory documents and fields by dealer type
+   - Source of truth: existing `itarang-software` onboarding validation and submit logic.
+   - Common documents for all currently implemented dealer types:
+     - GST Certificate
+     - Company PAN
+     - Last 3 Years Company Income Tax Returns
+     - Last 3 Months Company Bank Statement
+     - 4 Undated Cheques
+     - Passport Size Photograph
+     - Udyam Registration Certificate
+   - Common required company fields:
+     - Company name
+     - Company address
+     - Company type
+     - GST number
+     - Company PAN number
+     - Business details summary
+   - Common required bank fields:
+     - Bank name
+     - Account number
+     - IFSC
+     - Beneficiary name
+     - Branch
+     - Account type
+   - Sole proprietor:
+     - Owner name
+     - Owner phone
+     - Owner email
+     - Owner age
+     - Owner photograph
+     - Owner residential address: address line 1, city, district, state, pin code
+   - Partnership firm:
+     - Partnership Deed
+     - At least one partner
+     - For each partner: name, phone, email, age, photograph, address line 1, city, district, state, pin code
+   - Private limited company:
+     - MoU
+     - AoA
+     - At least one director
+     - For each director: name, phone, email, age, photograph, address line 1, city, district, state, pin code
+   - LLP:
+     - Not currently a separate company type in the checked `itarang-software` onboarding type list.
+     - Implementation should either add LLP as a new company type or map LLP to the partnership-style document flow after business confirmation.
+   - Branch dealer:
+     - Not currently a separate company type in the onboarding wizard.
+     - Existing Sales Admin review already treats matching GST cases as branch/additional-location style review.
+     - Document requirements should follow the underlying legal entity type, with branch handling done during Sales Admin review.
 
-3. Should corrections happen fully on WhatsApp, or through the existing correction link?
+3. Corrections
+   - Corrections should happen inside WhatsApp.
+   - The WhatsApp onboarding channel should be agentic: it should ask the dealer for missing/incorrect values, accept corrected text or replacement documents, re-check them, and update the draft application.
+   - The existing correction link can remain as a fallback/admin tool, but the dealer-facing correction experience should be WhatsApp-first.
 
-4. Should the dealer agreement happen before Sales Admin review or after Sales Admin approval?
+4. Dealer agreement
+   - Dealer agreement is not started automatically before Sales Admin review.
+   - Agreement is initiated by the admin from the admin workflow after review/approval when appropriate.
 
-5. Who receives alerts when a new WhatsApp onboarding application is ready for review?
+5. Review alerts
+   - Sales Admin receives the alert when a WhatsApp onboarding application is ready for review.
+   - The application should then appear in the normal Sales Admin review panel, not in a separate WhatsApp-only queue.
 
 ---
 
